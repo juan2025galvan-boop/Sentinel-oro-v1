@@ -2,25 +2,22 @@ import os
 from fastapi import FastAPI, UploadFile, File, Form, Response
 from twilio.rest import Client
 from langchain_openai import ChatOpenAI
-import pdfplumber
 
-# 1. INICIALIZACIÓN DEL CEREBRO
+# 1. INICIALIZACIÓN
 app = FastAPI()
 
-# Configuración de las llaves (Se cargan desde Render)
+# Configuración desde Render
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TWILIO_SID = os.getenv("TWILIO_SID")
 TWILIO_TOKEN = os.getenv("TWILIO_TOKEN")
 
-# --- ¡OJO ARQUITECTO! PONGA SU NUEVO NÚMERO AQUÍ ---
-# El número que acaba de obtener en Twilio (ejemplo: +1234567890)
-NUEVO_NUMERO_TWILIO = "+1234567890" 
-# --------------------------------------------------
+# EL NÚMERO QUE OBTUVIMOS (681) 263-1834
+NUEVO_NUMERO_TWILIO = "+16812631834" 
 
 client = Client(TWILIO_SID, TWILIO_TOKEN)
 llm = ChatOpenAI(model="gpt-4o", api_key=OPENAI_API_KEY)
 
-# 2. FUNCIÓN DE ENVÍO DE WHATSAPP
+# 2. FUNCIONES DE COMUNICACIÓN
 def enviar_whatsapp(to_number, mensaje):
     client.messages.create(
         from_=f"whatsapp:{NUEVO_NUMERO_TWILIO}",
@@ -28,28 +25,28 @@ def enviar_whatsapp(to_number, mensaje):
         to=to_number
     )
 
-# 3. FUNCIÓN DE REPORTE DE VOZ (Inclusión Total)
 def enviar_reporte_voz(to_number, texto_resumen):
-    """Llama al usuario y le lee el hallazgo para inclusión visual"""
     clean_number = to_number.replace("whatsapp:", "")
     client.calls.create(
         twiml=f'<Response><Say language="es-MX" voice="Polly.Miguel">¡Qué más Arquitecto! Sentinel al habla. {texto_resumen}</Say></Response>',
         to=clean_number,
-        from_=NUEVO_NUMERO_TWILIO  # Aquí usamos el número sin el "whatsapp:"
+        from_=NUEVO_NUMERO_TWILIO
     )
 
-# 4. RUTA MAESTRA (WEBHOOK)
+# 3. WEBHOOK (EL PUENTE)
 @app.post("/webhook")
 async def webhook_sentinel(
     MediaUrl0: str = Form(None), 
     From: str = Form(...), 
     Body: str = Form(None)
 ):
+    # Respuesta vacía legal para Twilio (Evita el silencio)
+    twiml_response = '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
+    
     if MediaUrl0:
-        enviar_whatsapp(From, "¡Qué más, Arquitecto! Recibí el documento. Déjeme le pego una revisada a ver qué 'goles' le están metiendo... 🕵️‍♂️")
+        enviar_whatsapp(From, "¡Qué más, Arquitecto! Recibí el PDF. Revisando goles... 🕵️‍♂️")
         
-        # Simulación de hallazgo (El agente trabajando por su ahorro)
-        hallazgo = "Pillé un cobro de 'Seguro de Vida' por $18.500 en Bancolombia que no debería estar ahí. ¡No regalemos la platica!"
+        hallazgo = "Pillé un cobro de 'Seguro de Vida' por $18.500 en Bancolombia que no debería estar ahí. ¡Ojo!"
         
         enviar_whatsapp(From, f"🚨 ¡ALERTA DE GOL! 🚨\n{hallazgo}")
         
@@ -59,11 +56,7 @@ async def webhook_sentinel(
             print(f"Error en llamada: {e}")
             
     elif Body:
-        respuesta = "¡Epa! Aquí sigo patrullando su mina de oro. Mándeme cualquier extracto y de una lo auditamos."
-        enviar_whatsapp(From, respuesta)
+        # Esto despierta al WhatsApp si le escribes cualquier cosa
+        enviar_whatsapp(From, "¡Epa! Aquí sigo patrullando su mina de oro. Mándeme el PDF y lo auditamos de una.")
     
-    return Response(content="OK", media_type="text/xml")
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    return Response(content=twiml_response, media_type="application/xml")
