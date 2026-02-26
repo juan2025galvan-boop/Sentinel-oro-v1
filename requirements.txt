@@ -1,7 +1,5 @@
 fastapi
 uvicorn
-crewai
-langchain_openai
-pdfplumber
 twilio
 python-multipart
+openai
