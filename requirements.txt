@@ -6,3 +6,4 @@ pdfplumber
 python-multipart
 pymupdf
 requests
+pydub
