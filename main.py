@@ -1,57 +1,58 @@
 import os
+import fitz  # PyMuPDF para leer el PDF
+import requests
 from fastapi import FastAPI, Form, Response
 from twilio.rest import Client
+from langchain_openai import ChatOpenAI
 
 app = FastAPI()
 
-# 1. CONFIGURACIÓN
+# Configuración
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TWILIO_SID = os.getenv("TWILIO_SID")
 TWILIO_TOKEN = os.getenv("TWILIO_TOKEN")
 NUMERO_WHATSAPP_SANDBOX = "+14155238886" 
 NUMERO_VOZ_PERSONAL = "+16812631834"    
 
 client = Client(TWILIO_SID, TWILIO_TOKEN)
+llm = ChatOpenAI(model="gpt-4o", api_key=OPENAI_API_KEY)
 
-# 2. FUNCIÓN DE WHATSAPP
-def enviar_whatsapp(to_number, mensaje):
-    try:
-        client.messages.create(
-            from_=f"whatsapp:{NUMERO_WHATSAPP_SANDBOX}",
-            body=mensaje,
-            to=to_number
-        )
-    except Exception as e:
-        print(f"Error WhatsApp: {e}")
+def analizar_con_ia(texto_pdf):
+    """La IA revisa el texto y busca cobros sospechosos"""
+    prompt = f"Eres un auditor financiero experto. Revisa este extracto y dime si hay cobros de seguros, comisiones o gastos inusuales. Resumen muy corto para WhatsApp: {texto_pdf}"
+    respuesta = llm.invoke(prompt)
+    return respuesta.content
 
-# 3. FUNCIÓN DE VOZ (SIN AUDIO MUDO)
-def enviar_reporte_voz(to_number, texto_resumen):
-    clean_number = to_number.replace("whatsapp:", "")
-    # Usamos la voz estandar para asegurar compatibilidad total y evitar llamadas mudas
-    twiml_audio = (
-        '<?xml version="1.0" encoding="UTF-8"?>'
-        '<Response>'
-        '<Pause length="3"/>'
-        f'<Say language="es-MX" voice="man">Atencion Arquitecto. {texto_resumen}</Say>'
-        '</Response>'
-    )
-    try:
-        client.calls.create(twiml=twiml_audio, to=clean_number, from_=NUMERO_VOZ_PERSONAL)
-    except Exception as e:
-        print(f"Error Voz: {e}")
+def extraer_texto_pdf(url_media):
+    """Descarga el PDF y saca las letras"""
+    response = requests.get(url_media)
+    with open("temp.pdf", "wb") as f:
+        f.write(response.content)
+    
+    texto = ""
+    with fitz.open("temp.pdf") as doc:
+        for pagina in doc:
+            texto += pagina.get_text()
+    return texto
 
-# 4. WEBHOOK (EL ARREGLO PARA QUE EL CHAT RESPONDA)
 @app.post("/webhook")
 async def webhook_sentinel(MediaUrl0: str = Form(None), From: str = Form(...), Body: str = Form(None)):
-    # IMPORTANTE: Twilio necesita este XML vacio para saber que recibimos el mensaje
-    twiml_ok = '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
-    
     if MediaUrl0:
-        enviar_whatsapp(From, "¡PDF Recibido! Buscando fugas de dinero... 🕵️‍♂️")
-        hallazgo = "Encontre un cobro de Seguro por 18 mil 500 pesos. ¡Pilas!"
-        enviar_whatsapp(From, f"🚨 ALERTA: {hallazgo}")
-        enviar_reporte_voz(From, hallazgo)
-    elif Body:
-        # Esto hara que responda al "Hola"
-        enviar_whatsapp(From, "¡Sentinel activo! Mandeme el PDF para auditarlo, Arquitecto.")
-    
-    return Response(content=twiml_ok, media_type="application/xml")
+        # 1. Avisar que estamos trabajando
+        client.messages.create(from_=f"whatsapp:{NUMERO_WHATSAPP_SANDBOX}", body="🔍 Leyendo su extracto... un momento.", to=From)
+        
+        # 2. Procesar el PDF real
+        texto_extraido = extraer_texto_pdf(MediaUrl0)
+        analisis = analizar_con_ia(texto_extraido)
+        
+        # 3. Enviar el resultado real
+        client.messages.create(from_=f"whatsapp:{NUMERO_WHATSAPP_SANDBOX}", body=f"✅ Auditoría lista:\n{analisis}", to=From)
+        
+        # 4. Llamada de alerta (Inclusión)
+        client.calls.create(
+            twiml=f'<Response><Pause length="2"/><Say language="es-MX" voice="man">Arquitecto, auditoria terminada. Revise su guasap. Encontre novedades en su extracto.</Say></Response>',
+            to=From.replace("whatsapp:", ""),
+            from_=NUMERO_VOZ_PERSONAL
+        )
+
+    return Response(content='<?xml version="1.0" encoding="UTF-8"?><Response></Response>', media_type="application/xml")
