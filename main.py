@@ -1,71 +1,67 @@
 import os
-from fastapi import FastAPI, UploadFile, File, Form, Response
+from fastapi import FastAPI, Form, Response
 from twilio.rest import Client
 from langchain_openai import ChatOpenAI
-import pdfplumber
 
-# 1. INICIALIZACIÓN DEL CEREBRO
 app = FastAPI()
 
-# Configuración de las llaves (Se cargan desde Render)
+# Configuración (Asegúrate de tener estas variables en Render)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TWILIO_SID = os.getenv("TWILIO_SID")
 TWILIO_TOKEN = os.getenv("TWILIO_TOKEN")
-TWILIO_NUMBER = "whatsapp:+14155238886" # Número Sandbox Twilio
+
+# IMPORTANTE: Para llamadas de voz, Twilio usa números normales, NO el de WhatsApp.
+# Si no tienes un número comprado, usa el número de prueba que Twilio te dio para VOZ.
+TWILIO_WHATSAPP_NUMBER = "whatsapp:+14155238886"
+TWILIO_VOICE_NUMBER = "+14155238886" # <-- Verifica que este número tenga permisos de VOZ en Twilio
 
 client = Client(TWILIO_SID, TWILIO_TOKEN)
-llm = ChatOpenAI(model="gpt-4o", api_key=OPENAI_API_KEY)
 
-# 2. FUNCIÓN DE ENVÍO DE WHATSAPP (Visual e Inclusivo)
+# FUNCIÓN DE WHATSAPP
 def enviar_whatsapp(to_number, mensaje):
     client.messages.create(
-        from_=TWILIO_NUMBER,
+        from_=TWILIO_WHATSAPP_NUMBER,
         body=mensaje,
         to=to_number
     )
 
-# 3. FUNCIÓN DE REPORTE DE VOZ (Accesibilidad Total)
+# FUNCIÓN DE VOZ CORREGIDA
 def enviar_reporte_voz(to_number, texto_resumen):
-    """Llama al usuario y le lee el hallazgo para inclusión visual"""
-    # Limpiamos el número (quitamos 'whatsapp:')
+    # 1. Aseguramos el formato internacional con el '+'
     clean_number = to_number.replace("whatsapp:", "")
+    if not clean_number.startswith('+'):
+        clean_number = '+' + clean_number
+    
+    # 2. Intentamos la llamada
     client.calls.create(
-        twiml=f'<Response><Say language="es-MX" voice="Polly.Miguel">¡Qué más Arquitecto! Sentinel al habla. {texto_resumen}</Say></Response>',
+        twiml=f'<Response><Pause length="1"/><Say language="es-MX" voice="Polly.Miguel">¡Qué más Arquitecto! Soy Sentinel. Pillé lo siguiente: {texto_resumen}</Say></Response>',
         to=clean_number,
-        from_='+14155238886' # Asegúrese de que este sea su número de Twilio habilitado para voz
+        from_=TWILIO_VOICE_NUMBER 
     )
 
-# 4. RUTA MAESTRA (WEBHOOK)
 @app.post("/webhook")
 async def webhook_sentinel(
     MediaUrl0: str = Form(None), 
     From: str = Form(...), 
     Body: str = Form(None)
 ):
-    # CASO A: EL ARQUITECTO ENVÍA UN PDF (AUDITORÍA)
     if MediaUrl0:
-        # 1. Saludo inmediato
-        enviar_whatsapp(From, "¡Qué más, Arquitecto! Recibí el documento. Déjeme le pego una revisada a ver qué 'goles' le están metiendo... 🕵️‍♂️")
+        enviar_whatsapp(From, "¡Qué más, Arquitecto! Recibí el PDF. Espere un tiento que ya estoy cazando goles... 🕵️‍♂️")
         
-        # 2. Lógica de Auditoría (Aquí simulamos el hallazgo del Agente)
-        hallazgo = "Pillé un cobro de 'Seguro de Vida' por $18.500 en Bancolombia que no debería estar ahí. ¡No regalemos la platica!"
+        hallazgo = "Pillé un cobro de 'Seguro de Vida' por 18 mil 500 pesos en su extracto que no debería estar ahí. ¡Pilas pues!"
         
-        # 3. Alerta Visual (WhatsApp)
+        # Alerta WhatsApp
         enviar_whatsapp(From, f"🚨 ¡ALERTA DE GOL! 🚨\n{hallazgo}")
         
-        # 4. Alerta Auditiva (Inclusión)
+        # Alerta de Voz (Inclusión)
         try:
             enviar_reporte_voz(From, hallazgo)
-        except:
-            print("Llamada de voz fallida (Revisar saldo de Twilio)")
+        except Exception as e:
+            # Esto nos dirá en Render exactamente qué pasó
+            print(f"Error técnico en la llamada: {e}")
+            enviar_whatsapp(From, "Arquitecto, intenté llamarlo pero no pude. Revise los permisos de voz en Twilio.")
             
-    # CASO B: MENSAJE DE TEXTO (INTERACCIÓN)
     elif Body:
-        respuesta = "¡Epa! Aquí sigo patrullando su mina de oro. Mándeme cualquier extracto o PDF y de una lo auditamos."
-        enviar_whatsapp(From, respuesta)
+        enviar_whatsapp(From, "¡Epa! Aquí sigo patrullando. Mándeme el extracto cuando quiera.")
     
     return Response(content="OK", media_type="text/xml")
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
