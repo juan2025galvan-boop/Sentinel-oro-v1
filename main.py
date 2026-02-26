@@ -9,7 +9,7 @@ from langchain_openai import ChatOpenAI
 
 app = FastAPI()
 
-# 1. CONFIGURACIÓN E INICIALIZACIÓN DE DB
+# 1. BASE DE DATOS Y MEMORIA
 DB_NAME = "sentinel_memoria.db"
 
 def inicializar_db():
@@ -20,7 +20,7 @@ def inicializar_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             fecha TEXT,
             detalle TEXT,
-            monto TEXT
+            monto REAL
         )
     ''')
     conn.commit()
@@ -28,7 +28,7 @@ def inicializar_db():
 
 inicializar_db()
 
-# Variables de entorno
+# CONFIGURACIÓN
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TWILIO_SID = os.getenv("TWILIO_SID")
 TWILIO_TOKEN = os.getenv("TWILIO_TOKEN")
@@ -38,26 +38,26 @@ NUMERO_VOZ_PERSONAL = "+16812631834"
 client = Client(TWILIO_SID, TWILIO_TOKEN)
 llm = ChatOpenAI(model="gpt-4o", api_key=OPENAI_API_KEY)
 
-# 2. LÓGICA DE MEMORIA
-def guardar_hallazgo(detalle):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    fecha_hoy = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    cursor.execute("INSERT INTO hallazgos (fecha, detalle) VALUES (?, ?)", (fecha_hoy, detalle))
-    conn.commit()
-    conn.close()
+# 2. FUNCIONES DE APOYO
+def enviar_whatsapp(to_number, mensaje):
+    try:
+        client.messages.create(from_=f"whatsapp:{NUMERO_WHATSAPP_SANDBOX}", body=mensaje, to=to_number)
+    except:
+        print("Límite de mensajes o error en Twilio.")
 
-def obtener_historial():
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT fecha, detalle FROM hallazgos ORDER BY id DESC LIMIT 3")
-    filas = cursor.fetchall()
-    conn.close()
-    if not filas:
-        return "No hay registros previos."
-    return "\n".join([f"- {f[0]}: {f[1]}" for f in filas])
+def transcribir_audio(url_audio):
+    """Convierte el audio de WhatsApp a texto usando OpenAI Whisper"""
+    audio_data = requests.get(url_audio, auth=(TWILIO_SID, TWILIO_TOKEN))
+    with open("temp_audio.ogg", "wb") as f:
+        f.write(audio_data.content)
+    
+    # Aquí usaríamos el SDK de OpenAI para Whisper
+    from openai import OpenAI
+    ai_client = OpenAI(api_key=OPENAI_API_KEY)
+    with open("temp_audio.ogg", "rb") as audio_file:
+        transcripcion = ai_client.audio.transcriptions.create(model="whisper-1", file=audio_file)
+    return transcripcion.text
 
-# 3. LÓGICA DE PROCESAMIENTO
 def extraer_texto_pdf(url_media):
     response = requests.get(url_media)
     with open("temp.pdf", "wb") as f:
@@ -68,24 +68,59 @@ def extraer_texto_pdf(url_media):
             texto += pagina.get_text()
     return texto
 
+# 3. WEBHOOK MAESTRO
 @app.post("/webhook")
-async def webhook_sentinel(MediaUrl0: str = Form(None), From: str = Form(...), Body: str = Form(None)):
+async def webhook_sentinel(
+    MediaUrl0: str = Form(None), 
+    MediaContentType0: str = Form(None),
+    From: str = Form(...), 
+    Body: str = Form(None)
+):
+    # Respuesta rápida para Twilio
+    twiml_ok = '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
+    
+    # CASO A: RECIBIMOS UN ARCHIVO (PDF O AUDIO)
     if MediaUrl0:
-        # Extraer y Auditar
-        texto_extraido = extraer_texto_pdf(MediaUrl0)
-        
-        historial = obtener_historial()
-        prompt = f"Audita este extracto: {texto_extraido[:2000]}. Historial previo: {historial}. Resume hallazgos sospechosos."
-        
-        analisis = llm.invoke(prompt).content
-        
-        # GUARDAR EN MEMORIA
-        guardar_hallazgo(analisis[:100]) # Guardamos resumen corto
-        
-        # Enviar (Esto fallará hasta que se resetee el límite de Twilio)
-        try:
-            client.messages.create(from_=f"whatsapp:{NUMERO_WHATSAPP_SANDBOX}", body=f"🚨 Auditoría:\n{analisis}", to=From)
-        except:
-            print("Límite de mensajes alcanzado, pero el hallazgo fue guardado en la base de datos.")
+        # Si es un AUDIO
+        if "audio" in MediaContentType0:
+            enviar_whatsapp(From, "👂 Escuchando su mensaje, Arquitecto...")
+            texto_voz = transcribir_audio(MediaUrl0)
+            enviar_whatsapp(From, f"Usted dijo: \"{texto_voz}\"")
+            # Procesar la pregunta del usuario con la IA
+            respuesta_ia = llm.invoke(f"El usuario dice: {texto_voz}. Responde como el Sentinel.").content
+            enviar_whatsapp(From, respuesta_ia)
 
-    return Response(content='<?xml version="1.0" encoding="UTF-8"?><Response></Response>', media_type="application/xml")
+        # Si es un PDF
+        elif "pdf" in MediaContentType0 or MediaUrl0.endswith(".pdf"):
+            enviar_whatsapp(From, "🔍 Auditando extracto y comparando con el mes pasado...")
+            texto_pdf = extraer_texto_pdf(MediaUrl0)
+            
+            # Consultar historial para comparar
+            conn = sqlite3.connect(DB_NAME)
+            ultimo = conn.execute("SELECT detalle FROM hallazgos ORDER BY id DESC LIMIT 1").fetchone()
+            conn.close()
+            
+            contexto = f"Historial previo: {ultimo[0] if ultimo else 'No hay'}. Analiza este nuevo texto: {texto_pdf[:2000]}"
+            analisis = llm.invoke(f"Eres un auditor. Compara y busca cobros nuevos o aumentos injustos: {contexto}").content
+            
+            # Guardar en memoria
+            conn = sqlite3.connect(DB_NAME)
+            conn.execute("INSERT INTO hallazgos (fecha, detalle) VALUES (?, ?)", (datetime.now().strftime("%Y-%m-%d"), analisis[:200]))
+            conn.commit()
+            conn.close()
+            
+            enviar_whatsapp(From, f"🚨 REPORTE DE AUDITORÍA:\n{analisis}")
+            
+    # CASO B: RECIBIMOS TEXTO (COMANDOS)
+    elif Body:
+        cmd = Body.lower()
+        if "historial" in cmd:
+            conn = sqlite3.connect(DB_NAME)
+            filas = conn.execute("SELECT fecha, detalle FROM hallazgos LIMIT 5").fetchall()
+            conn.close()
+            msg = "\n".join([f"📅 {f[0]}: {f[1]}" for f in filas]) if filas else "No hay historial."
+            enviar_whatsapp(From, f"📜 Memoria del Sentinel:\n{msg}")
+        else:
+            enviar_whatsapp(From, "¡Epa Arquitecto! Mandeme un PDF, un audio o escriba 'Historial'.")
+
+    return Response(content=twiml_ok, media_type="application/xml")
