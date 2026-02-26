@@ -2,7 +2,7 @@ fastapi
 uvicorn
 twilio
 langchain-openai
-pdfplumber
+openai
 python-multipart
 pymupdf
 requests
